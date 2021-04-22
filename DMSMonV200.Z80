@@ -1,0 +1,705 @@
+;DMSMON-Z80 v2.00 for Z80
+;Copyright 2021 David Saul  https://meanderingpi.com/
+; 
+;Built on fork of GWMON-80 v0.1.4 for 8080/8085/Z80 and Compatibles 
+;Copyright (c) 2019 The Glitch Works
+;http://www.glitchwrks.com 
+; 
+;Coded specifically for Z80 based computers
+;with additional / modified funtionality as described below
+; 
+; Intering X during entry abouts dump command
+; In and Out re-written for Z80 - 8080 dynamic code delated
+; x also aborts ( not just X)
+; Welcome message personalised to DMSMon
+; Help command added
+; 
+; 
+; 
+STACK       EQU     $0fff ; top of CPU Board RAM
+RAMST       EQU     $0800 ; start of CPU board RAM
+            .ORG    0000H 
+; 
+;Initialization and sign-on message
+LOG:        JP      SETUP 
+
+            ORG     $0040   ; leave restart addresses available 
+            
+            
+; 
+;Check for first boot - if true skip trial command setup
+; 
+SE1:        LD      HL,RAMST ; Test the first 3 RAM locations, if they are all zero 
+            LD      A,00 ; assume this is not a power up start so don't 
+            ADD     A,(HL) ; setup the default test command code
+            INC     HL 
+            ADD     A,(HL) 
+            INC     HL 
+            ADD     A,(HL) 
+            JR      Z,SE2 
+; 
+;Assume this is cold start to write default ret test code to RAM
+            LD      HL, RAMST ; point to test command code start
+            LD      A, $C7    ; RST0 code
+            LD      (HL), A   ; insert into RAMST    
+; 
+; 
+SE2:        LD      HL,LOGMSG 
+            CALL    STROUT 
+            LD      HL,VERSION 
+            CALL    STROUT 
+            LD      HL,FLINE 
+            CALL    STROUT 
+            LD      HL,MSG 
+            CALL    STROUT 
+; 
+;Main command loop
+CMDLP:      LD      HL,PROMPT 
+            CALL    STROUT 
+            LD      HL,CMDLP ; Get CMDLP address in HL
+            PUSH    HL ; Push HL, prime stack for RET to CMDLP
+            CALL    CIN 
+            AND     $5F 
+            CP      "D" 
+            JP      Z,MEMDMP 
+            CP      "E" 
+            JP      Z,EDMEM 
+            CP      "G" 
+            JP      Z,GO 
+            CP      "O" 
+            JR      Z,OUTPUT 
+            CP      "I" 
+            JR      Z,INPUT 
+            CP      "L" 
+            JP      Z,LOAD 
+            CP      "T" 
+            JP      Z,TEST 
+            CP      "H" 
+            JP      Z,HELP
+            CP      $0D         ; just loop if CR - ie don't disp an error
+            RET     Z
+            LD      HL,ERR 
+            JP      ERROUT 
+; 
+;Execute monitor development code
+;the T command will jump to the RAM base and execute the code at that point
+;a RET brings it back to the menu, this allow monitor routines to be developmed without having to keep
+;re-flashing to the EEPROM. You just lode the test code as a hex8 file at the RAMbase.
+;default code is loaded on a cold start to give a default response
+;test code must be preceeded with 3 NOPs to all the monitor to differenciate between code and warm starts
+;test code should finish with a RET to get back to the core monitor
+;A warm start will not overwrite the test code
+TEST:       JP      RAMST 
+; 
+; 
+;display help info and program credits
+HELP:       LD      HL,HELPT 
+            CALL    STROUT 
+            RET      
+; 
+; 
+;Get a port address, write byte out
+OUTPUT:     CALL    SPCOUT 
+            CALL    GETHEX 
+            LD      B,A 
+            CALL    SPCOUT 
+            CALL    GETHEX 
+            CALL    JMPOUT 
+            RET      
+; 
+;Input from port, print contents
+INPUT:      CALL    SPCOUT 
+            CALL    GETHEX 
+            LD      B,A 
+            CALL    SPCOUT 
+            LD      A,B 
+            CALL    JMPIN 
+            CALL    HEXOUT 
+            RET      
+; 
+;Edit memory from a starting address until X is
+;pressed. Display mem loc, contents, and results
+;of write.
+EDMEM:      CALL    SPCOUT 
+            CALL    ADRIN 
+            LD      H,D 
+            LD      L,E 
+ED1:        CALL    CRLF 
+            CALL    ADROUT 
+            CALL    SPCOUT 
+            LD      A,":" 
+            CALL    COUT 
+            CALL    SPCOUT 
+            CALL    DMPLOC 
+            CALL    SPCOUT 
+            CALL    GETHEX 
+            CP      $0D ; Check for CR if so move to next add and don't update
+            JR      Z,ED2 
+            LD      (HL),A 
+            CALL    SPCOUT 
+            CALL    DMPLOC 
+ED3:        INC     HL 
+            JP      ED1 
+ED2:        NOP
+            JR      ED3
+; 
+;Get an address and jump to it
+GO:         CALL    SPCOUT 
+            CALL    ADRIN 
+            LD      H,D 
+            LD      L,E 
+            JP      (HL) 
+; 
+;Dump memory between two address locations - AS CURRENTLY CODED THIS IS A MAX 8K BLOCK
+MEMDMP:     CALL    SPCOUT 
+            CALL    ADRIN 
+            LD      H,D ; Start in HL
+            LD      L,E 
+            LD      C,$10 
+            CALL    SPCOUT 
+            CALL    ADRIN ; End in DE
+MD1:        CALL    CINW ; test for abort
+            CP      "X" 
+            RET     Z 
+            CP      "x" 
+            RET     Z 
+            CALL    CRLF 
+            CALL    DMP16 
+            LD      A,D ; High byte of end address
+            CP      H ; Compare current high address
+            RET     M ; Done if current high > end high
+            LD      A,E ; Low byte of end address
+            CP      L ; Compare current low address
+            JR      C,MD2 ; Current low > end low, check for rollover
+            JR      MD1 ; Continue dumping memory
+MD2:        LD      A,D ; High byte of end address
+            CP      H ; Are high bytes the same?
+            JR      NZ,MD1 ; Keep going if upper bytes aren't the same
+            RET      ; Done if they are
+; 
+; 
+;DMP16 -- Dump 16 consecutive memory locations
+; 
+;pre: HL pair contains starting memory address
+;post: memory from HL to HL + 16 printed
+;post: HL incremented to HL + 16
+; 
+DMP16:      CALL    ADROUT 
+            CALL    SPCOUT 
+            LD      A,":" 
+            CALL    COUT 
+            LD      C,$10 
+DM1:        CALL    SPCOUT 
+            CALL    DMPLOC 
+            INC     HL 
+            DEC     C 
+            RET     Z 
+            JR      DM1 
+; 
+; 
+;DMPLOC -- Print a byte at HL to console
+; 
+;pre: HL pair contains address of byte
+;post: byte at HL printed to console
+; 
+DMPLOC:     LD      A,(HL) 
+            CALL    HEXOUT 
+            RET      
+; 
+; 
+;HEXOUT -- Output byte to console as hex
+; 
+;pre: A register contains byte to be output
+;post: byte is output to console as hex
+; 
+HEXOUT:     PUSH    BC 
+            LD      B,A 
+            RRCA     
+            RRCA     
+            RRCA     
+            RRCA     
+            AND     0Fh 
+            CALL    HEXASC 
+            CALL    COUT 
+            LD      A,B 
+            AND     0Fh 
+            CALL    HEXASC 
+            CALL    COUT 
+            POP     BC 
+            RET      
+; 
+; 
+;HEXASC -- Convert nybble to ASCII char
+; 
+;pre: A register contains nybble
+;post: A register contains ASCII char
+; 
+HEXASC:     ADD     A,$90 
+            DAA      
+            ADC     A,$40 
+            DAA      
+            RET      
+; 
+; 
+;ADROUT -- Print an address to the console
+; 
+;pre: HL pair contains address to print
+;post: HL printed to console as hex
+; 
+ADROUT:     LD      A,H 
+            CALL    HEXOUT 
+            LD      A,L 
+            CALL    HEXOUT 
+            RET      
+; 
+; 
+;ADRIN -- Get an address word from console
+; 
+;pre: none
+;post: DE contains address from console
+; 
+ADRIN:      CALL    GETHEX 
+            CP      $0D         ; test for CR if so about
+            JP      Z,WARMB 
+            LD      D,A 
+            CALL    GETHEX 
+            CP      $0D         ; test for CR if so about
+            JP      Z,WARMB 
+            LD      E,A 
+            RET      
+; 
+; 
+;GETHEX -- Get byte from console as hex
+; 
+;pre: none
+;post: A register contains byte from hex input
+; or if CR returns CR code - 0DH
+; 
+GETHEX:     PUSH    DE 
+ERC:        CALL    CINHX
+            CP      $0D         ; check for CR if true just return with it
+            JR      Z, GE1      ; i.e. skip hex conversion
+            CALL    ASCHEX 
+            RLCA     
+            RLCA     
+            RLCA     
+            RLCA     
+            LD      D,A 
+            CALL    CINHX
+            CP      $0D         ; should never get here but just in case check for CR if true just return with it
+            JR      Z, GE1      ; i.e. skip hex conversion
+            CALL    ASCHEX 
+            OR      D 
+GE1:        POP     DE 
+            RET
+            
+; 
+; 
+;GETHEX8 -- Get byte from console as hex, USED foe HEX8 LOADS ONLY
+; 
+;pre: none
+;post: A register contains byte from hex input
+;
+; 
+GETHEX8:    PUSH    DE 
+            CALL    CINNE
+            CALL    ASCHEX
+            RLCA     
+            RLCA     
+            RLCA     
+            RLCA     
+            LD      D,A 
+            CALL    CINNE
+            CALL    ASCHEX 
+            OR      D 
+            POP     DE
+            OUT     (5), A
+            RET            
+; 
+; 
+;ASCHEX -- Convert ASCII coded hex to nybble
+; 
+;pre: A register contains ASCII coded nybble
+;post: A register contains nybble
+; 
+ASCHEX:     SUB     30h 
+            CP      $0A 
+            RET     M 
+            AND     $5F 
+            SUB     $07 
+            RET      
+; 
+; 
+;JMPOUT -- Output to a dynamic port - this has be altered to use extended Z80 commands
+; 
+;pre: B register contains the port to output to
+;pre: A register contains the byte to output
+;post: byte is output
+; 
+JMPOUT:              
+; 
+            LD      C,B 
+            OUT     (C),A 
+            RET      
+; 
+; 
+;JMPIN -- Input from a dynamic port - this has be altered to use extended Z80 commands
+; 
+;pre: A register contains the port to input from
+;post: A register contains port value
+; 
+JMPIN:               
+            LD      C,A 
+            IN      A,(C) 
+            RET      
+; 
+; 
+; 
+;SPCOUT -- Print a space to the console
+; 
+;pre: none
+;post: 0x20 printed to console
+; 
+SPCOUT:     LD      A," " 
+            CALL    COUT 
+            RET      
+; 
+; 
+;STROUT -- Print a null-terminated string
+; 
+;pre: HL contains pointer to start of a null-
+;     terminated string
+;post: string at HL printed to console
+; 
+STROUT:     LD      A,(HL) 
+            CP      00 
+            RET     Z 
+            CALL    COUT 
+            INC     HL 
+            JR      STROUT 
+; 
+; 
+;ERROUT -- Print a null-terminated error string
+; 
+;pre: HL contains pointer to start of a null-
+;     terminated string
+;post: string at HL printed to console
+;post: program execution returned to command loop
+; 
+ERROUT:     CALL    CRLF 
+            CALL    STROUT 
+            RET      
+; 
+; 
+;CRLF -- Print a CR, LF
+; 
+;Preserves HL
+; 
+;pre: none
+;post: CR, LF printed to console
+; 
+CRLF:       PUSH    HL 
+            LD      HL,CRLFT 
+            CALL    STROUT 
+            POP     HL 
+            RET      
+; 
+; 
+;LOAD -- Load an Intel HEX file from console
+; 
+;post: Intel HEX file loaded, or error printed
+; 
+LOAD:  
+      ;      LD      A,$10
+      ;      OUT     (CTLPRT),A
+      ;      LD      A, 02
+      ;      CALL    DELV
+      ;      LD      A,$15
+      ;      OUT     (CTLPRT),A
+      ;      LD      A, 02
+      ;      CALL    DELV
+      
+      
+ 
+LOAD1:      CALL    CINNE 
+            CP      ":" 
+            JR      NZ,LOAD1 ; Wait for start colon
+            OUT     (5), A            
+            CALL    GETHEX8 ; Get record length
+            LD      B,A ; Record length in B
+            LD      C,A ; Start checksumming in C
+            CALL    GETHEX8 ; Start address high byte
+            LD      H,A ; Store in H
+            ADD     A,C 
+            LD      C,A ; Checksum
+            CALL    GETHEX8 ; Start address low byte
+            LD      L,A ; Store in L
+            ADD     A,C 
+            LD      C,A ; Checksum
+            CALL    GETHEX8 ; Get record type
+            LD      D,A ; Store record type in D
+            ADD     A,C 
+            LD      C,A ; Checksum record type
+            LD      A,B ; Check record length
+            OUT     (4), A
+            AND     A 
+            JR      Z,LOAD4 ; Length == 0, done getting data
+LOAD2:      CALL    GETHEX8 ; This is the main record processing loop
+            LD      (HL),A ; Store char at HL
+            ADD     A,C 
+            LD      C,A ; Checksum
+            LD      A, B
+            OR      $80
+;            OUT     (4), A
+            INC     HL ; Move memory pointer up
+            DEC     B 
+            JR      NZ,LOAD2 ; Not done with the line
+LOAD3:      CALL    GETHEX8 ; Get checksum byte
+            ADD     A,C 
+            JR      NZ,CSUMER ; Checksum bad, print error
+            OR      D 
+            JR      Z,LOAD ; Record Type 00, keep going
+LOAD4:      LD      A,$FF
+;            OUT     (4), A
+            CALL    CINNE ; Done getting data, silently eat chars
+;            OUT     (5), A
+            CP      $0A ; Check for LF
+            JR      NZ,LOAD4
+            LD      HL, HEX8C
+            CALL    STROUT
+            RET      ; Got LF, return to command loop
+CSUMER:     LD      HL,CSERR ; Print checksum error to console
+            JP      ERROUT ; RET from ERROUT will return to command loop
+; 
+; 
+;DELV  simple delay loop 10mS x val in A
+; 
+;Preserves N/A everything but AF
+; 
+;pre:  A  x 10mS delay
+;post: Routine returns after delay registers are restored
+;        
+; 
+DELV:       LD      C,A 
+            PUSH    BC 
+            PUSH    DE 
+DEL2:                
+            LD      DE,666 
+DEL1:       DEC     DE 
+            LD      A,E 
+            OR      D 
+            JR      NZ,Del1 
+            DEC     C 
+            JR      NZ,Del2 
+            POP     DE 
+            POP     BC 
+            RET      
+; 
+; 
+; 
+;WARMB -- re-start monitor program without starting text
+; 
+;Preserves N/A
+; 
+;pre:  none - ignores state of stack etc
+;post: Stack back to the default starting point, sends 2 blank lines to the console
+; 
+WARMB:      LD      SP,STACK 
+            CALL    CRLF 
+            JP      CMDLP 
+;
+
+
+
+;========================================================================        
+;Monitor I/O Module for Intel 8251 UART
+;Recoded for Z80 from Glitch Works 8080 monitor
+; 
+;Adjust CTLPRT and DATPRT for your specific hardware.
+;Stack Pointer initialized at 0x0FFF, adjust as needed.
+; 
+;After including this module, you still need to
+;set the ORG in the main monitor source.
+; 
+CTLPRT      EQU     02H 
+DATPRT      EQU     01H 
+; 
+; 
+;SETUP -- Prepare the system for running the
+;   monitor
+; 
+;pre: none
+;post: stack and console are initialized
+; 
+SETUP:      LD      SP,STACK 
+            LD      HL,INIUART 
+            LD      B,06H ; length of ini string
+INURT:      LD      A,(HL) 
+            OUT     (CTLPRT),A 
+            INC     HL 
+            DEC     B 
+            JR      NZ,INURT 
+            CALL    BEEP 
+            
+            LD      A,$0F       ; set both PIO Channels mode 0 (output)
+            OUT     (7),A       ; port B control reg
+            OUT     (6),A       ; port A control reg
+            JP      SE1 
+; 
+; 
+; 
+; 
+;CINNE -- Get a char from the console, no echo, no validaion
+; 
+;pre: console device is initialized
+;post: received char is in A register
+; 
+CINNE:      IN      A,(CTLPRT) 
+            AND     02H 
+            JR      Z,CINNE 
+            IN      A,(DATPRT) 
+            RET      
+; 
+; 
+;CINHX -- Get a char from the console, validate a good hex char, echo
+; 
+;pre: console device is initialized
+;post: received char is in A register
+; 
+CINHX:      IN      A,(CTLPRT) 
+            AND     02H 
+            JR      Z,CINHX 
+            IN      A,(DATPRT) 
+            CP      "X" ; First test for X or x if so abort
+            JP      Z,WARMB 
+            CP      "x" 
+            JP      Z,WARMB 
+            CP      $0D ;test for carrage return
+            RET     Z   ; just return - do not try to echo 
+            CP      $30 ; not an X so check it's valid ASCII 
+            JR      C,CINHX 
+            CP      $3A 
+            JR      C,GOOD 
+            CP      $41 
+            JR      C,CINHX ; cover upper and lower case a-f
+            CP      $47 
+            JR      C,GOOD 
+            CP      $61 
+            JR      C,CINHX 
+            CP      $67 
+            JR      NC,CINHX 
+; 
+GOOD:       OUT     (DATPRT),A ; good entry so echo and return with it in A
+            RET      
+; 
+; 
+;CINW -- check for a Char, no echo, non blocking
+; 
+;pre: console device is initialized
+;post: received char is in A register, zero flag set and A put to Zero if no char in buffer
+; 
+CINW:       IN      A,(CTLPRT) ;check for available char
+            AND     02H 
+            LD      A,00 
+            RET     Z 
+            IN      A,(DATPRT) 
+            RET      
+; 
+; 
+;CIN -- Get a char from the console and echo
+;Use this where you need a non ASCII char otherwise use CINHX
+; 
+;pre: console device is initialized
+;post: received char is in A register
+;post: received char is echoed
+; 
+CIN:        CALL    CINNE 
+            OUT     (DATPRT),A 
+            RET      
+; 
+; 
+; 
+; 
+;COUT -- Output a character to the console
+; 
+;pre: A register contains char to be printed
+;post: character is printed to the console
+; 
+COUT:       PUSH    BC 
+            LD      B,A 
+COUT1:      IN      A,(CTLPRT) 
+            AND     01H 
+            JR      Z,COUT1 
+            LD      A,B 
+            OUT     (DATPRT),A 
+            POP     BC 
+            RET      
+; 
+; 
+;BEEP  Sound beep length defined approx by A x 10ms
+;Beep sount is enabled by setting the UART DTR line as such code sis specifc to 8251
+; 
+;Preserves N/A everything but AF
+; 
+;pre:  A  x 10mS beep length
+;post: Routine returns after delay registers are restored
+;            
+; 
+BEEP:       LD      A,(UARTC) ; load default UART control byte 
+            OR      $02 ; Set DTR bit
+            OUT     (CTLPRT),A 
+            LD      A,50 ; should be about a 1/2 sec delay
+            CALL    DELV 
+            LD      A,(UARTC) 
+            OUT     (CTLPRT),A ; restore default UART setting
+            RET      
+; 
+;Init string for the 8251, x16 clock, 8N1
+INIUART:    DB      00H,00H,00H,40H,4EH 
+UARTC:      DB      15H ; UART Control reg config - transmit / recieve enabled, DTR high - buzzer off, RTS high - onboard LED on, Error reset 
+; 
+;I/O Module description string
+MSG:        DB      13,10,"Built with Intel 8251 I/O module",0 
+; 
+; 
+;Monitor Strings
+; 
+HELPT:      DB      13,10,10 
+            DB      "Help",13,10 
+            DB      "D - Display memory xxxx to yyyy",13,10 
+            DB      "E - Enter Data at yyyy enter x to abort",13,10 
+            DB      "G - Run Code at xxxx",13,10 
+            DB      "L - Load Hex 8 data",13,10 
+            DB      "O - Output to Port xx data yy",13,10 
+            DB      "I - Fetch data from Port xx ",13,10 
+            DB      "T - Run test code (@0800H)",13,10 
+            DB      "H - display this message",13,10,10 
+            DB      "Credits",13,10 
+            DB      "DMSmon 2.00 a Fork of GWMON-80 0.1.4 recoded for Z80",13,10 
+            DB      "Copyright (c) 2021 David Saul, 2019 The Glitch Works",0 
+PROMPT:     DB      13,10,10,">",0 
+CSERR:      DB      "CHECKSUM " 
+ERR:        DB      "ERROR",0 
+CRLFT:      DB      13,10,0 
+HEX8L:      DB      "oad Hex8 file",13,10,0
+HEX8C:      DB      13,10,10,"Hex8 load complete",13,10,0 
+
+; 
+; 
+LOGMSG:     DB      13,10,10 
+            DB      "   " ; the first chars miss align on powerup the extra hello    
+            DB      13,10,10 ; ensures the main boot message looks correct
+            DB      "XXXX  X   X  XXX",13,10 
+            DB      "X   X XX XX X     XX XX   XXX   XXX",13,10 
+            DB      "X   X X X X  XXX  X X X  X   X X   X",13,10 
+            DB      "X   X X   X     X X X X  X   X X   X",13,10 
+            DB      "XXXX  X   X  XXX  X   X   XXX  X   X",13,10 
+            DB      13,10,0 
+; 
+; 
+FLINE:      DB      "H for help and credits",13,10,0 
+; 
+VERSION:    DB      "Version 2.00",13,10,0 
+
+
+
